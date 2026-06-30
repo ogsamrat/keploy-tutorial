@@ -1,0 +1,25 @@
+{
+  "name": "keploy-go-field-guide",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A beginner-friendly tutorial site for running a Keploy quickstart on a Go app, built with Next.js + MDX.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@mdx-js/loader": "^3.1.0",
+    "@mdx-js/react": "^3.1.0",
+    "@next/mdx": "14.2.35",
+    "next": "14.2.35",
+    "next-themes": "^0.3.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "rehype-autolink-headings": "^7.1.0",
+    "rehype-pretty-code": "^0.13.2",
+    "rehype-slug": "^6.0.0",
+    "remark-gfm": "^4.0.0",
+    "shiki": "^1.24.0"
+  }
+}
