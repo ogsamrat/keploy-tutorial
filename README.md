@@ -4,7 +4,7 @@ A single page, beginner friendly tutorial that walks a developer through running
 [Keploy](https://keploy.io) quickstart on a Go (Gin and MongoDB) app. You record real API
 traffic, replay it as tests, and watch it catch a regression. Built with Next.js and MDX.
 
-> Live site: https://keploy-go-field-guide.vercel.app
+> Live site: https://keploy-tutorial-three.vercel.app/
 
 ## What this is
 
