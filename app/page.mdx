@@ -1,0 +1,267 @@
+<div className="docs-layout">
+
+<DocNav />
+
+<article className="doc">
+
+<Hero />
+
+If you write services in Go, you know how this usually goes. The code is the fun part. Writing tests for it is the part you keep promising yourself you will do later. Keploy takes a different angle. Instead of writing tests, you record them by using your app the way anyone would, and Keploy turns that real traffic into a suite you can replay whenever you want.
+
+I had not touched it before the afternoon I wrote this. What follows is the honest play by play of getting a Go quickstart working start to finish, including the two or three moments where I was sure I had broken something. I had not. You will be fine too.
+
+<Cheatsheet />
+
+## What even is Keploy?
+
+Keploy is an open source testing tool. It sits underneath your running app and watches the traffic going in and out. When a request hits your API, Keploy notes the request and the response and saves the pair as a test case. When your app talks to a database or some other service, it records that conversation too and saves it as a mock.
+
+Later you run `keploy test`. Keploy starts your app, fires the recorded requests at it again, and answers the database calls from those saved mocks instead of a real database. Then it compares what your app returns now against what it returned when you recorded. Same answer, the test passes. Different answer, it shows you exactly what changed.
+
+The short version: you get integration tests, with the database stubbed out, and you wrote neither the tests nor the stubs.
+
+## The one-minute mental model
+
+Two commands do almost all the work. `keploy record` is the tape recorder. `keploy test` is the playback. Everything below is those two commands with a sample app in the middle.
+
+<LoopDiagram />
+
+Here is the part that won me over as a Go developer. The annoying bit of integration testing is normally the fixtures and the fake database. Keploy captures both from a real run. Your Mongo queries turn into mocks on their own, so the replay needs no live database and finishes in milliseconds.
+
+## Getting set up (the Windows tax)
+
+I am on Windows, and there is one wrinkle worth understanding instead of just memorizing. Keploy hooks into traffic using eBPF, which is a Linux kernel feature. Windows does not have it, so the tool runs inside Linux. The clean way to get Linux on Windows is WSL (Windows Subsystem for Linux), and inside that we use Docker to run the sample app and its database.
+
+<Callout type="info" title="Before you start">
+You will want a few things in place. None of them take long.
+
+- Windows with **WSL** and an Ubuntu distro installed
+- **Docker** working inside that Ubuntu (check with `docker --version`)
+- Roughly **2 GB of free space** for the images Docker downloads
+- A little patience on the very first run, which is the slow one
+</Callout>
+
+If `docker --version` prints a version in your Ubuntu terminal, you are set. If not, install it with `sudo apt install docker.io docker-compose-v2`.
+
+<Callout type="tip" title="Docker in WSL does not wake up on its own">
+Every time you open a fresh Ubuntu terminal, Docker may be asleep. If a command complains that it cannot reach the Docker daemon, run `sudo service docker start` once and carry on. This caught me out exactly once, then it became muscle memory.
+</Callout>
+
+## Step 1: Install Keploy
+
+One line. Paste it into your Ubuntu terminal:
+
+```bash
+curl --silent -O -L https://keploy.io/install.sh && source install.sh
+```
+
+When it finishes you get an ASCII bunny and a list of commands. Check that it landed:
+
+```bash
+keploy --version
+```
+
+You should see a version print back. Mine was `3.5.63`. The bunny is your "it worked" signal.
+
+## Step 2: Grab a victim app
+
+Keploy keeps a repo of ready to run samples. We will use the Gin and MongoDB one, a tiny URL shortener. You POST a long link, it hands back a short code, and visiting the code redirects you to the original.
+
+```bash
+git clone https://github.com/keploy/samples-go.git
+cd samples-go/gin-mongo
+```
+
+Have a look with `ls`. The files that matter are `main.go`, `handler.go`, and `docker-compose.yaml`. Because Docker Compose builds the Go app and starts Mongo for you, you do not need Go or MongoDB installed on your machine. One less thing to set up.
+
+## Step 3: Hit record
+
+This is the moment. The command below starts the app and its database and tells Keploy to listen:
+
+```bash
+keploy record -c "docker compose up" --container-name "ginMongoApp"
+```
+
+The first time you run this, Docker has to download Mongo and the Keploy agent and build the Go app, so expect a long wall of logs. You will also notice Keploy quietly restart itself with `sudo`. That is expected, not a mistake. It needs root for the eBPF hooks.
+
+<Screenshot src="/images/01-record-pull.png" alt="Terminal showing keploy record re-running with sudo and Docker pulling many image layers" caption="The first run pulls a stack of images, so give it a few minutes. Notice Keploy re-running itself with sudo for the kernel access it needs." />
+
+When the scrolling stops and the terminal just sits there showing the app and the containers, it is not frozen. It is recording, and it is waiting for you to send some requests.
+
+<Screenshot src="/images/02-recording-up.png" alt="Terminal showing the app, MongoDB, and Keploy containers created and running" caption="App, MongoDB, and the Keploy container are up. This quiet moment is recording, waiting for traffic." />
+
+This is where I hit my first two snags. Both happen only on the first run, and both have clean fixes.
+
+<Callout type="warning" title="Snag one: the download times out">
+My very first record died with a `TLS handshake timeout` partway through pulling Mongo. It is just a heavy, flaky first download, nothing you did. Run the command again and Docker picks up where it left off. Or pull the big image on its own first so it can retry in peace:
+
+```bash
+docker pull mongo
+```
+</Callout>
+
+<Callout type="warning" title="Snag two: 'keploy-agent did not become ready in time'">
+On my next try every download finished, but Keploy gave up while building the Go app. The first build pulls a chunky Go toolchain and ran past the patience timer. The fix that worked right away was to build the app once, on its own, before recording:
+
+```bash
+docker compose build
+```
+
+With the slow part already cached, `keploy record` went straight to listening. If you would rather not pre-build, add `--build-delay 60` to the record command to buy more time.
+</Callout>
+
+With recording live, open a second Ubuntu terminal and throw some real traffic at it. Each call becomes a test:
+
+```bash
+curl --request POST --url http://localhost:8080/url \
+  --header 'content-type: application/json' \
+  --data '{"url": "https://github.com"}'
+```
+
+It answers with a short code, something like `{"ts":...,"url":"http://localhost:8080/Vz3jvMYY"}`. Send a few more with different URLs, then visit one of the codes to record the redirect path too:
+
+```bash
+curl --request GET --url http://localhost:8080/Vz3jvMYY
+```
+
+<Screenshot src="/images/03-curl-traffic.png" alt="Terminal showing several curl POST requests and a GET request with their responses" caption="A handful of POSTs and a GET. Every one of these turns into a test case." />
+
+When you have made a few calls, go back to the first terminal and press Ctrl and C together to stop recording.
+
+## Step 4: Meet your generated tests
+
+Keploy just wrote a folder for you. Look inside:
+
+```bash
+cd keploy/test-set-1/tests
+ls
+```
+
+<Screenshot src="/images/04-test-files.png" alt="Terminal listing of YAML test files inside test-set-1" caption="One YAML file per request Keploy saw, all sitting in test-set-1." />
+
+<Callout type="warning" title="Why test-set-1 and not test-set-0?">
+This confused me for a minute. The sample repo ships with its own example recording in `test-set-0`. So when you record, Keploy does not overwrite it. Your fresh session lands in `test-set-1` instead. If you open `test-set-0` expecting your `github.com` call and find some old `google.com` request instead, you are just looking at the bundled sample, not your run. Your tests are in `test-set-1`.
+</Callout>
+
+Open one of your test files and you will see the request you sent and the exact response that came back, saved as plain YAML:
+
+```bash
+cat post-url-7.yaml
+```
+
+<Screenshot src="/images/05-test-yaml.png" alt="A generated Keploy test YAML showing request, response, and a noise section" caption="Inside a test: the request, the exact response, and a noise section Keploy filled in for the fields that change on every run." />
+
+<Callout type="info" title="Keploy already handles the 'changes every time' fields">
+Look near the bottom of that file for a `noise` section listing `body.ts` and `header.Date`. Those values are different on every run (a timestamp, the response date), so Keploy marked them to be ignored when it compares. It did that on its own. Good, because otherwise every single test would fail for boring reasons.
+</Callout>
+
+Now step up one folder and peek at the mocks:
+
+```bash
+cd ..
+head -50 mocks.yaml
+```
+
+<Screenshot src="/images/06-mocks-yaml.png" alt="The mocks.yaml file showing recorded dependency calls" caption="mocks.yaml holds the calls your app made to its dependencies. This is the fake database your replays will run against." />
+
+## Step 5: Replay and the green wall
+
+Now the satisfying part. Replay everything you recorded:
+
+```bash
+keploy test -c "docker compose up" --container-name "ginMongoApp" --delay 10
+```
+
+Keploy starts the app, replays each saved request, answers Mongo from the mocks, and compares the responses. The `--delay 10` just gives the app ten seconds to wake up before the requests start flying.
+
+<Screenshot src="/images/07-test-start.png" alt="Terminal showing keploy test starting and lining up both test sets" caption="keploy test boots the app again and queues up both test sets to replay." />
+
+<ResultPanel variant="pass" label="13 of 13 passed">
+  <Screenshot src="/images/08-tests-passing.png" alt="Keploy test summary showing 13 of 13 tests passing" />
+</ResultPanel>
+
+Look at the second row of that summary. Eleven tests in 211 milliseconds. No real database was touched, since it all came from the recorded mocks. That speed is the whole point.
+
+## Step 6: Break it on purpose
+
+Passing tests are nice, but they do not prove much until you watch them catch a real mistake. So let us add a bug and see if Keploy notices.
+
+In `handler.go`, the response sends back a field called `url`. We will rename it to `urls`, the kind of typo that slips through review and quietly breaks every client. One command does it, and a quick grep confirms it:
+
+```bash
+sed -i 's/"url":/"urls":/' handler.go
+grep -n '"urls":' handler.go
+```
+
+The app runs from a built image, so your edit changes nothing until you rebuild. This is a real step, not an optional one:
+
+```bash
+docker compose build
+```
+
+<Screenshot src="/images/09-break-build.png" alt="Terminal showing the sed edit, a grep confirming it, and a docker compose build" caption="Renamed the field with sed, confirmed it on line 98, then rebuilt so the change takes effect." />
+
+Now run the tests again:
+
+```bash
+keploy test -c "docker compose up" --container-name "ginMongoApp" --delay 10
+```
+
+<ResultPanel variant="fail" label="Regression caught">
+  <Screenshot src="/images/10-test-failing.png" alt="Keploy output showing failing tests with an expected versus actual diff of url and urls" />
+</ResultPanel>
+
+There it is. The tests go red, and Keploy points straight at the difference. It expected `url`, the app returned `urls`, and the content length even ticked from 65 to 66. You renamed one field and your recorded suite caught it everywhere, with no assertion written by hand.
+
+Put the app back the way it was. One command, no cleanup by hand:
+
+```bash
+git checkout handler.go
+docker compose build
+```
+
+<Callout type="success" title="That is the whole loop">
+Record real traffic, replay it as tests, watch it catch a regression. You just did integration testing on a Go service without writing a single fixture.
+</Callout>
+
+## Gotchas I hit (so you don't)
+
+The happy path is smooth. Here is everything that made me pause, gathered in one place so you can skim it before you start.
+
+<Callout type="warning" title="The first record is the slow one">
+Both timeouts I ran into, the Mongo `TLS handshake timeout` and the `keploy-agent did not become ready` build timeout, were first run download and build weight. Do the heavy lifting up front with `docker pull mongo` and `docker compose build`, then record. After that, runs start almost instantly.
+</Callout>
+
+<Callout type="warning" title="Edited the code? Rebuild before testing">
+The app runs from a Docker image, so changing a `.go` file does nothing until you run `docker compose build` again. I would have stared at "why is my change not showing up" for ages if I had not rebuilt.
+</Callout>
+
+<Callout type="warning" title="'strict mock-window' can bite you later">
+Newer Keploy prints a note about strict mock-window containment being active. It is stricter about matching mocks to the exact test that recorded them. Everything passed for me, but if a future run suddenly reports missing mocks after an upgrade, this is the likely reason. The way out is to set `KEPLOY_STRICT_MOCK_WINDOW=0` before the command.
+</Callout>
+
+<Callout type="tip" title="Trust the summary table, not the noise">
+Keploy is chatty. MongoDB alone logs a small novel on startup, and Keploy prints extra hints and summaries around the real result. Do not let it rattle you. The thing that matters is the boxed TESTRUN SUMMARY with the pass and fail counts. Read that, skim the rest.
+</Callout>
+
+## Why a Go dev should care
+
+Here is where I landed after one afternoon. Integration tests get skipped not out of laziness but because wiring up realistic fixtures and a throwaway database is tedious, and it rots the moment your handlers change. Keploy goes after exactly that. It captures real request and response pairs, and real dependency calls, from an actual run, then replays them with the dependencies faked.
+
+For a Go service that mostly moves JSON between HTTP and a datastore, which is most of them, that is a good trade. You get a fast, repeatable safety net grown from real usage rather than from imagination, and it shouts the instant a response shape drifts. I came in a skeptic and left with thirteen tests I did not write.
+
+## Where to go next
+
+If this clicked, here is what I would reach for next:
+
+- Try it on one of your own Go services. The flow is the same: `keploy record`, use the app, `keploy test`.
+- Browse the other quickstarts in [keploy/samples-go](https://github.com/keploy/samples-go) for Echo, Fiber, gRPC, and more.
+- Read the official [Keploy quickstarts](https://keploy.io/docs/quickstart/quickstart-filter/) for the full set of flags and options.
+- Wire `keploy test` into CI so it runs on every pull request. The mocks travel with the repo, so there is no database to stand up.
+- Star or dig into [Keploy on GitHub](https://github.com/keploy/keploy) if you want to see how the recording works under the hood.
+
+Give it an afternoon. Worst case, you learned a new tool. Best case, you stop hand writing fixtures for good.
+
+</article>
+
+</div>
